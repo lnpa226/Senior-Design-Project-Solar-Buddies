@@ -1,0 +1,665 @@
+#include <Adafruit_GFX.h>    // Core graphics library
+#include <Adafruit_TFTLCD.h> // Hardware-specific library
+#include <TouchScreen.h>
+//
+#if defined(__SAM3X8E__)
+    #undef __FlashStringHelper::F(string_literal)
+    #define F(string_literal) string_literal
+#endif
+
+// When using the BREAKOUT BOARD only, use these 8 data lines to the LCD:
+// For the Arduino Uno, Duemilanove, Diecimila, etc.:
+//   D0 connects to digital pin 8  (Notice these are
+//   D1 connects to digital pin 9   NOT in order!)
+//   D2 connects to digital pin 2
+//   D3 connects to digital pin 3
+//   D4 connects to digital pin 4
+//   D5 connects to digital pin 5
+//   D6 connects to digital pin 6
+//   D7 connects to digital pin 7
+
+#define YP A3  // must be an analog pin, use "An" notation!
+#define XM A2  // must be an analog pin, use "An" notation!
+#define YM 9   // can be a digital pin
+#define XP 8   // can be a digital pin
+
+#define TS_MINX 150
+#define TS_MINY 120
+#define TS_MAXX 920
+#define TS_MAXY 940
+
+// For better pressure precision, we need to know the resistance
+// between X+ and X- Use any multimeter to read it
+// For the one we're using, its 300 ohms across the X plate
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
+
+#define LCD_CS A3
+#define LCD_CD A2
+#define LCD_WR 11
+#define LCD_RD 10
+// optional
+#define LCD_RESET A4
+
+// Assign human-readable names to some common 16-bit color values:
+#define BLACK   0x0000
+#define BLUE    0x001F
+#define RED     0xF800
+#define GREEN   0x07E0
+#define CYAN    0x07FF
+#define MAGENTA 0xF81F
+#define YELLOW  0xFFE0
+#define WHITE   0xFFFF
+
+#define BOXSIZE 40
+#define PENRADIUS 3
+
+#define MINPRESSURE 150
+#define MAXPRESSURE 1000
+
+int ONBUTTON = 13;
+int BACKLIGHT = 12;
+
+int buttonState = 0;
+
+Adafruit_TFTLCD tft(LCD_CS, LCD_CD, LCD_WR, LCD_RD, LCD_RESET);
+
+//the code above was provided by Adafruit
+
+//initializing pins and variables
+int SPC = 15; //the pin number without having to take up the physical A0 pin
+int SPV = 15; //""A1 //
+int PSC = 19; //""A4 //blue
+int PSV = 19; //""A5 //red
+  
+float SC;
+float SV;
+float PC;
+float PV; 
+float G; 
+float U;
+
+float scaleSC = 1;
+float scaleSV = 13.3;
+float scalePC = 1;
+float scalePV = 5.3;
+
+//Create the arrays for our sensor collection
+float TodayGen[24];
+float DaysGen[21];
+float TodayUse[24];
+float DaysUse[21];
+
+void setup() {
+  
+  //provided from Arduino: if analog input pin 5 is unconnected, random analog noise will cause the call to randomSeed() to generate
+  //different seed numbers each time the sketch runs.randomSeed() will then shuffle the random function.
+  //randomSeed(analogRead(5));
+
+  //assign pins as inputs
+  //"solar panel current & voltage"
+  pinMode(SPC, INPUT);
+  pinMode(SPV, INPUT); 
+  //"power system current & voltage"
+  pinMode(PSC, INPUT);
+  pinMode(PSV, INPUT);
+
+  pinMode(ONBUTTON, INPUT);
+  pinMode(BACKLIGHT, OUTPUT);
+
+  
+
+  
+  
+  //code provided by Adafruit from here to...
+  Serial.begin(9600);
+  Serial.println(F("TFT LCD test"));
+
+#ifdef USE_ADAFRUIT_SHIELD_PINOUT
+  Serial.println(F("Using Adafruit 2.8\" TFT Arduino Shield Pinout"));
+#else
+  Serial.println(F("Using Adafruit 2.8\" TFT Breakout Board Pinout"));
+#endif
+
+  Serial.print("TFT size is "); Serial.print(tft.width()); Serial.print("x"); Serial.println(tft.height());
+
+  tft.reset();
+
+  uint16_t identifier = tft.readID();
+
+  if(identifier == 0x9325) {
+    Serial.println(F("Found ILI9325 LCD driver"));
+  } else if(identifier == 0x9328) {
+    Serial.println(F("Found ILI9328 LCD driver"));
+  } else if(identifier == 0x7575) {
+    Serial.println(F("Found HX8347G LCD driver"));
+  } else if(identifier == 0x9341) {
+    Serial.println(F("Found ILI9341 LCD driver"));
+  } else if(identifier == 0x8357) {
+    Serial.println(F("Found HX8357D LCD driver"));
+  } else {
+    Serial.print(F("Unknown LCD driver chip: "));
+    Serial.println(identifier, HEX);
+    Serial.println(F("If using the Adafruit 2.8\" TFT Arduino shield, the line:"));
+    Serial.println(F("  #define USE_ADAFRUIT_SHIELD_PINOUT"));
+    Serial.println(F("should appear in the library header (Adafruit_TFT.h)."));
+    Serial.println(F("If using the breakout board, it should NOT be #defined!"));
+    Serial.println(F("Also if using the breakout, double-check that all wiring"));
+    Serial.println(F("matches the tutorial."));
+    return;
+  }
+
+  
+  
+  tft.begin(identifier);
+
+  //Rotates the screen 90 degrees per unit
+  tft.setRotation(1);
+  
+  Serial.print(F("Text                     "));
+  
+  
+}
+
+// Setup timers for our hourly and daily data collection
+unsigned long Timer;
+unsigned long Timer2;
+unsigned long OldTime = 0;
+unsigned long OldestTime = 0;
+int i = 0;
+int j = 0;
+void loop() {
+
+  //We use the millis function to tell time
+  Timer = millis();
+  Timer2 = millis();
+
+  //When the button is not pressed, we save power by turning off the display
+  buttonState = digitalRead(ONBUTTON);
+  if (buttonState == LOW){
+    tft.fillScreen(BLACK);
+    digitalWrite(BACKLIGHT, LOW);
+  }
+
+  //When the button is pressed, collect the power data for the current state of the panel and battery
+  if (buttonState == HIGH){
+    digitalWrite(BACKLIGHT, HIGH);
+    SC = (((analogRead(SPC))*4.9))/100000;
+    SV = ((analogRead(SPV))*4.9)/1000;
+    PC = (((analogRead(PSC))*4.9))/100000;
+    PV = ((analogRead(PSV))*4.9)/1000;
+
+    //calculate power
+    G = scaleSC * SC * scaleSV * SV;
+    U = scalePC * PC * scalePV * PV;
+    mainMenu();
+    
+  }
+
+  //If our timer is less than old time, it has been 49 days and our arduino does not know how to count past that.
+  //We must 
+  if (Timer < OldTime){
+    OldTime = millis();
+    Timer = millis();
+  }
+  if (Timer2 < OldestTime){
+    OldestTime = millis();
+    Timer2 = millis();
+  }
+
+  //We subtract the times to find out how long it has been since our last data collection
+  Timer2 = Timer - OldestTime;
+  Timer = Timer - OldTime;
+  
+//3600000
+  //Collect our data every hour or when the device is powered on for the first time
+  if (Timer > 100 or i == 0){
+
+    //These formulas are scaled based on our resistance
+    SC = (((analogRead(SPC))*4.9))/100000;
+    SV = ((analogRead(SPV))*4.9)/1000;
+    PC = (((analogRead(PSC))*4.9))/100000;
+    PV = ((analogRead(PSV))*4.9)/1000;
+    G = scaleSC * SC * scaleSV * SV;
+    U = scalePC * PC * scalePV * PV;
+
+    //Put our power statistics in arrays
+    TodayGen[i] = G;
+    TodayUse[i] = U;
+    i++;
+    //if it has been 24 hours, reset to our first array slot
+    if (i > 23){
+      i = 0;
+    }
+    OldTime = millis();
+  }
+
+  //Every 24 hours we need to average our data and put it in a special array
+//86400000
+  if (Timer2 > 5000 or j == 0){
+    float Todays = 0;
+    int count = 0;
+
+    //Loop through the day's generation data and average it
+    for (int h = 0; h < 24; h++){
+      if (TodayGen[h] != 0){
+        Todays = TodayGen[h]+Todays;
+        count++;
+      }
+    }
+
+    //Add the average to our 20 day array
+
+    float hold[21];
+
+    for(int h = 0; h<20; h++){
+      hold[h] = DaysGen[h];
+      
+    }
+    for(int h = 0; h < 20; h++){
+      DaysGen[h+1] = hold[h];
+      
+    }
+    DaysGen[0] = Todays/count;
+    count = 0;
+    Todays = 0;
+
+    //Same as above, but for use data
+    for (int h = 0; h < 24; h++){
+      if (TodayUse[h] != 0){
+        Todays = TodayUse[h]+Todays;
+        count++;
+      }
+    }
+
+    float hold2[21];
+
+    for(int h = 0; h<20; h++){
+      hold2[h] = DaysUse[h];
+      
+    }
+    for(int h = 0; h < 20; h++){
+      DaysUse[h+1] = hold2[h];
+      
+    }
+    DaysUse[0] = Todays/count;
+    //These lines are for testing and have been commented out
+    //Serial.println(DaysGen[j]);
+    //Serial.println(DaysUse[j]);
+    
+    j++;
+    if (j > 21){
+      j = 0;
+    }
+    OldestTime = millis();
+  }
+
+   
+}
+
+//Main menu function for displaying the main menu
+//and interacting with the menu choices
+unsigned long mainMenu() {
+  tft.fillScreen(BLACK);
+
+  
+  tft.setCursor(20, 0);
+  tft.setTextColor(WHITE); tft.setTextSize(2);
+  tft.println("Press a colored square to learn more!");
+  
+  
+  tft.setCursor(BOXSIZE*2, 50);
+  tft.fillRect(0, BOXSIZE, BOXSIZE, BOXSIZE, RED);
+  tft.setTextColor(WHITE); tft.setTextSize(3);
+  tft.println("Solar Panel Power");
+
+  
+  tft.setCursor(BOXSIZE*2, 130); 
+  tft.fillRect(0, BOXSIZE*3, BOXSIZE, BOXSIZE, YELLOW);
+  tft.setTextColor(WHITE); tft.setTextSize(3);
+  tft.println("Battery Power");
+
+  
+  tft.setCursor(BOXSIZE*2, 210); 
+  tft.fillRect(0, BOXSIZE*5, BOXSIZE, BOXSIZE, GREEN);
+  tft.setTextColor(WHITE); tft.setTextSize(3);
+  tft.println("Panel Power Graph");
+
+  tft.setCursor(BOXSIZE*2, 290); 
+  tft.fillRect(0, BOXSIZE*7, BOXSIZE, BOXSIZE, BLUE);
+  tft.setTextColor(WHITE); tft.setTextSize(3);
+  tft.println("Battery Power Graph");
+
+  //Loop to get the touchscreen coordinates the user has touched and send them to the correct screen
+  for(int count = 0; count < 30000; count++){
+    
+    TSPoint p = ts.getPoint();
+    
+    pinMode(XM, OUTPUT);
+    pinMode(YP, OUTPUT);
+    
+    if (p.z > MINPRESSURE && p.z < MAXPRESSURE) {
+      Serial.print("X = "); Serial.print(p.x);
+      Serial.print("\tY = "); Serial.print(p.y);
+      Serial.print("\tPressure = "); Serial.println(p.z);
+      if(660 < p.x && p.x < 830){
+        powerGenerated();
+      }
+      else if(480 < p.x && p.x < 620){
+        powerUsed();
+      }
+      else if(230 < p.x && p.x < 420){
+        powerGeneratedGraph();
+      }
+      else if(120 < p.x && p.x < 200){
+        powerUsedGraph();
+      }
+    }
+  }
+  
+   
+
+}
+
+//Power generated function that displays the generation data collected at button press
+unsigned long powerGenerated() {
+      tft.fillScreen(BLACK);
+      
+      tft.setCursor(0,0);
+      tft.setTextColor(RED); tft.setTextSize(3);
+      tft.println("How much power the solar ");
+      tft.println("panels are producing...");
+      
+      tft.setCursor(0, BOXSIZE*2);
+      tft.setTextColor(WHITE);  tft.setTextSize(2);
+      String SC_string = String(140*SC);
+      tft.println("Solar Panel Current: " + SC_string + "(A)");
+
+      tft.setCursor(0, BOXSIZE*3);
+      tft.setTextColor(WHITE);  tft.setTextSize(2);
+      String SV_string = String(12.8*SV);
+      tft.println("Solar Panel Voltage: " + SV_string + "(V)");
+
+   
+      tft.setCursor(0, BOXSIZE*4);
+      tft.setTextColor(RED);  tft.setTextSize(3);
+      tft.println("Solar Panels' Power: ");
+
+
+      tft.setCursor(BOXSIZE*3, BOXSIZE*5);
+      tft.setTextColor(RED);  tft.setTextSize(3);
+      String Gen = String(G);
+      tft.println(Gen + "(W)");
+
+      tft.setCursor(BOXSIZE*2, BOXSIZE*7);
+
+      tft.fillRect(0, BOXSIZE*7, BOXSIZE, BOXSIZE, WHITE);
+      tft.setTextColor(WHITE); tft.setTextSize(2);
+      tft.println("Return to main menu");
+      delay(1000);
+
+      //Loop to test if user would like to go back to the main menu
+      for(int count = 0; count < 30000; count++){
+    
+        TSPoint p = ts.getPoint();
+        
+        pinMode(XM, OUTPUT);
+        pinMode(YP, OUTPUT);
+        
+        if (p.z > MINPRESSURE && p.z < MAXPRESSURE && p.x > 5) {
+          Serial.print("X = "); Serial.print(p.x);
+          Serial.print("\tY = "); Serial.print(p.y);
+          Serial.print("\tPressure = "); Serial.println(p.z);
+          mainMenu();
+          
+        }
+      }
+
+}
+
+//Power used function that displays the power usage data at button press
+unsigned long powerUsed() {
+      tft.fillScreen(BLACK);
+
+      tft.setCursor(0,0);
+      tft.setTextColor(YELLOW); tft.setTextSize(3);
+      tft.println("How much power the ");
+      tft.println("batteries are producing...");
+      
+      tft.setCursor(0, BOXSIZE*2);
+      tft.setTextColor(WHITE);  tft.setTextSize(2);
+      String PC_string = String(140*PC);
+      tft.println("Power System Current:  " + PC_string + "(A)");
+
+   
+      tft.setCursor(0, BOXSIZE*3);
+      tft.setTextColor(WHITE);  tft.setTextSize(2);
+      String PV_string = String(12.8*PV);
+      tft.println("Power System Voltage:  " + PV_string + "(V)");
+
+      tft.setCursor(0, BOXSIZE*4);
+      tft.setTextColor(YELLOW);  tft.setTextSize(3);
+      tft.println("Batteries' Power: ");
+
+      
+      tft.setCursor(BOXSIZE*4, BOXSIZE*5);
+      tft.setTextColor(YELLOW);  tft.setTextSize(3);
+      String Used = String(U);
+      tft.println(Used + "(W)");
+
+    
+      tft.setCursor(BOXSIZE*2, BOXSIZE*7);
+
+      tft.fillRect(0, BOXSIZE*7, BOXSIZE, BOXSIZE, WHITE);
+      tft.setTextColor(WHITE); tft.setTextSize(2);
+      tft.println("Return to main menu");
+
+      //Loop to test if user would like to go back to the main menu
+      for(int count = 0; count < 30000; count++){
+    
+        TSPoint p = ts.getPoint();
+        
+        pinMode(XM, OUTPUT);
+        pinMode(YP, OUTPUT);
+        
+        if (p.z > MINPRESSURE && p.z < MAXPRESSURE && p.x > 5) {
+          Serial.print("X = "); Serial.print(p.x);
+          Serial.print("\tY = "); Serial.print(p.y);
+          Serial.print("\tPressure = "); Serial.println(p.z);
+          mainMenu();
+          
+        }
+      }
+}
+
+//Generation graph GUI function
+//This function graphs our power generation data from the last 20 days 
+//as well as today's data
+unsigned long powerGeneratedGraph() {
+      tft.fillScreen(BLACK);
+      
+      tft.setCursor(0, 0);
+      tft.setTextColor(GREEN);  tft.setTextSize(2);
+      tft.println("Average panel power for past 21 Days");
+
+      tft.setCursor(50, 300);
+
+      tft.fillRect(0, BOXSIZE*7, BOXSIZE, BOXSIZE, WHITE);
+      tft.setTextColor(WHITE); tft.setTextSize(2);
+      tft.println("Return to main menu");
+
+      // Draw x and y axis for the graph
+      int x = 250;
+      int y = 50;
+      int w = 1000;
+      tft.setCursor(0, 0);
+      tft.drawFastHLine(y, x, w, WHITE);
+      tft.drawFastVLine(y, 20, w-770, WHITE);
+      
+      // x tick marks
+      for(int i=0; i<20; i+=1){
+        tft.drawFastVLine(y+20, 240, 20, WHITE);
+        y+=20;
+      }
+
+      // y tick marks
+      for(int i=0; i<9; i+=1){
+        tft.drawFastHLine(40, x-25, 20, WHITE);
+        x-=25;
+      }
+
+      //Place our rectangles for the bar graph
+      bool flag = true;
+      for(int i = 0; i < 21; i++){
+        float q = DaysGen[i]/2;
+        if(flag){
+          tft.fillRect(450-(20*i), 251-q, 20, q, WHITE);
+          flag = false;
+        }
+        else{
+          tft.fillRect(450-(20*i), 251-q, 20, q, GREEN);
+          flag = true;
+        }
+      }
+      
+
+      // y labels for the graph
+      int a = 20;
+      int b = 20;
+      for(int i = 9; i > 0; i--){
+        tft.setCursor(a, b);
+        tft.setTextColor(CYAN);  tft.setTextSize(1);
+        tft.println(i*50);
+        b+=25;
+      }
+
+      a = y;
+      b = x + 240;
+
+      //X labels for the graph
+      tft.setCursor(a, b);
+      tft.setTextColor(CYAN);  tft.setTextSize(1);
+      tft.println("Today");
+      b -=10;
+      a-=35;
+      int j = 2;
+      for(int i = 0; i < 10; i++){
+        tft.setCursor(a, b);
+        tft.setTextColor(CYAN);  tft.setTextSize(1);
+        tft.println(j);
+        a-=40;
+        j+=2;
+      }
+
+      //Loop to check if the user would like to go back to the main menu
+      for(int count = 0; count < 50000; count++){
+    
+        TSPoint p = ts.getPoint();
+        
+        pinMode(XM, OUTPUT);
+        pinMode(YP, OUTPUT);
+        
+        if (p.z > MINPRESSURE && p.z < MAXPRESSURE && p.x > 5) {
+          Serial.print("X = "); Serial.print(p.x);
+          Serial.print("\tY = "); Serial.print(p.y);
+          Serial.print("\tPressure = "); Serial.println(p.z);
+          mainMenu();
+          
+        }
+      }
+}
+
+//Similar to the above graphing function
+//Used to graph power usage statistics for the last 20 days
+unsigned long powerUsedGraph() {
+  tft.fillScreen(BLACK);
+      
+      tft.setCursor(0, 0);
+      tft.setTextColor(BLUE);  tft.setTextSize(2);
+      tft.println("Average battery power for past 21 Days");
+
+      tft.setCursor(50, 300);
+
+      tft.fillRect(0, BOXSIZE*7, BOXSIZE, BOXSIZE, WHITE);
+      tft.setTextColor(WHITE); tft.setTextSize(2);
+      tft.println("Return to main menu");
+
+      // Draw x and y axis for the graph
+      int x = 250;
+      int y = 50;
+      int w = 1000;
+      tft.setCursor(0, 0);
+      tft.drawFastHLine(y, x, w, WHITE);
+      tft.drawFastVLine(y, 20, w-770, WHITE);
+      
+      // x tick marks
+      for(int i=0; i<20; i+=1){
+        tft.drawFastVLine(y+20, 240, 20, WHITE);
+        y+=20;
+      }
+
+      // y tick marks
+      for(int i=0; i<9; i+=1){
+        tft.drawFastHLine(40, x-25, 20, WHITE);
+        x-=25;
+      }
+
+      //Place our rectangles for the bar graph
+      bool flag = true;
+      for(int i = 0; i < 21; i++){
+        float q = DaysUse[i]/2;
+        if(flag){
+          tft.fillRect(450-(20*i), 251-q, 20, q, WHITE);
+          flag = false;
+        }
+        else{
+          tft.fillRect(450-(20*i), 251-q, 20, q, BLUE);
+          flag = true;
+        }
+      }
+      
+
+      // y labels
+      int a = 20;
+      int b = 20;
+      for(int i = 9; i > 0; i--){
+        tft.setCursor(a, b);
+        tft.setTextColor(CYAN);  tft.setTextSize(1);
+        tft.println(i*50);
+        b+=25;
+      }
+
+      a = y;
+      b = x + 240;
+
+      //X labels
+      tft.setCursor(a, b);
+      tft.setTextColor(CYAN);  tft.setTextSize(1);
+      tft.println("Today");
+      b -=10;
+      a-=35;
+      int j = 2;
+      for(int i = 0; i < 10; i++){
+        tft.setCursor(a, b);
+        tft.setTextColor(CYAN);  tft.setTextSize(1);
+        tft.println(j);
+        a-=40;
+        j+=2;
+      }
+
+      //Loop to test if user would like to go back to the main menu
+      for(int count = 0; count < 50000; count++){
+    
+        TSPoint p = ts.getPoint();
+        
+        pinMode(XM, OUTPUT);
+        pinMode(YP, OUTPUT);
+        
+        if (p.z > MINPRESSURE && p.z < MAXPRESSURE && p.x > 5) {
+          Serial.print("X = "); Serial.print(p.x);
+          Serial.print("\tY = "); Serial.print(p.y);
+          Serial.print("\tPressure = "); Serial.println(p.z);
+          mainMenu();
+          
+        }
+      }
+}
